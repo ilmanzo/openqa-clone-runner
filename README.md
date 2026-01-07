@@ -33,7 +33,8 @@ chmod +x clone_runner.py
 
 ## Configuration File Format
 
-Create a YAML file to define your cloning batch.
+The script supports two modes. 
+1) for **jobs cloning** , create a YAML file to define your cloning batch.
 
 **Example `smoke_tests.yaml`:**
 
@@ -49,6 +50,23 @@ variables:
   TEST: "custom_test_suite"
   CASEDIR: "https://github.com/os-autoinst/os-autoinst-distri-opensuse.git"
 ```
+
+2) 
+when the `jobs_to_clone` entry is missing, the script switches to `openqa-cli api -X post isos` mode. In this mode some variables are mandatory:
+
+```yaml
+host: 'openqa.opensuse.org'
+
+variables:
+  DISTRI: "sle"
+  VERSION: "16.1"
+  BUILD: ["73.2", "73.3", "73.4"] # Expands to 3 builds
+  FLAVOR: ["Full", "Online"] # Expands to 2 flavors
+  ARCH: ["x86_64", "aarch64", "s390x", "ppc64le"] # Expands to 4 architectures  
+```
+
+running with this configuration, it will result to a total of 3*2*4 = 24 ISO post API calls, which, depending on the job template, can result in tens or hundreds of job spawned. **Take care!**
+
 
 ## Output
 
