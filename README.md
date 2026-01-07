@@ -51,7 +51,8 @@ variables:
   CASEDIR: "https://github.com/os-autoinst/os-autoinst-distri-opensuse.git"
 ```
 
-2) 
+2) post isos
+
 when the `jobs_to_clone` entry is missing, the script switches to `openqa-cli api -X post isos` mode. In this mode some variables are mandatory:
 
 ```yaml
