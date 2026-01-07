@@ -1,15 +1,20 @@
 # OpenQA Clone Runner
 
-A Python utility to automate the cloning of OpenQA jobs in bulk using YAML configuration files. This wrapper around `openqa-clone-job` allows you to define job sources, variable overrides, and flags in a structured way.
+A Python utility to automate the cloning of OpenQA jobs in bulk or posting new ISO assets using YAML configuration files. This wrapper around `openqa-clone-job` and `openqa-cli` allows you to define job sources, variable overrides, and flags in a structured way.
 
 ## Prerequisites
 
 1. **Python 3**: Ensure you have Python 3 installed.
-2. **OpenQA Client Tools**: The script relies on the `openqa-clone-job` command line tool. Ensure it is installed and available in your system `PATH`.
+2. **OpenQA Client Tools**: The script relies on `openqa-clone-job` and `openqa-cli`. Ensure they are installed and available in your system `PATH`. Most likely you'll want to install the `openQA-client` package. 
 3. **Python Dependencies**:
    ```bash
    pip install PyYAML
    ```
+   or
+   ```bash
+   zypper install python3-PyYAML
+   ```
+  
 
 ## Usage
 
