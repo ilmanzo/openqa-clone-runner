@@ -244,5 +244,25 @@ class TestCloneRunnerCLI(unittest.TestCase):
         self.assertIn("VAR_A=", output)
         self.assertIn("VAR_B=", output)
 
+    @patch('subprocess.run')
+    @patch('clone_runner.load_config')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_conflicting_host_and_flag(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_config: MagicMock, mock_subprocess: MagicMock):
+        """Test that conflicting host config and flags trigger an error."""
+        mock_is_file.return_value = True
+        mock_load_config.return_value = {
+            'host': 'https://openqa.opensuse.org',
+            'variables': {'DISTRI': 'sle', 'VERSION': '15', 'FLAVOR': 'Online', 'ARCH': 'x86_64', '_GROUP_ID': 100},
+            'flags': ['--osd']
+        }
+
+        with patch('sys.argv', ['clone_runner.py', '-c', 'conflict.yaml', '--dry-run']):
+            with self.assertRaises(SystemExit) as cm:
+                clone_runner.main()
+
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Error: Conflicting options: 'host' set to 'https://openqa.opensuse.org' but '--osd' flag provided.", mock_stdout.getvalue())
+
 if __name__ == '__main__':
     unittest.main()

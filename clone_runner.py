@@ -125,8 +125,16 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
     all_new_urls = []
 
     # Determine host for URL construction once
-    host = config.get('host', 'https://openqa.suse.de')
-    if 'host' not in config:
+    host = config.get('host')
+    if host:
+        if '--osd' in flags and 'suse.de' not in host:
+            print(f"Error: Conflicting options: 'host' set to '{host}' but '--osd' flag provided.")
+            sys.exit(1)
+        if '--o3' in flags and 'opensuse.org' not in host:
+            print(f"Error: Conflicting options: 'host' set to '{host}' but '--o3' flag provided.")
+            sys.exit(1)
+    else:
+        host = 'https://openqa.suse.de'
         if '--osd' in flags:
             host = 'https://openqa.suse.de'
         elif '--o3' in flags:
