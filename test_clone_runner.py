@@ -264,5 +264,18 @@ class TestCloneRunnerCLI(unittest.TestCase):
             self.assertEqual(cm.exception.code, 1)
             self.assertIn("Error: Conflicting options: 'host' set to 'https://openqa.opensuse.org' but '--osd' flag provided.", mock_stdout.getvalue())
 
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_duplicate_keys_yaml(self, mock_stdout: StringIO):
+        """Test that duplicate keys in YAML trigger an error."""
+        duplicate_yaml = "variables:\n  ARCH: x86_64\n  ARCH: i586"
+
+        with patch('sys.argv', ['clone_runner.py', '-c', 'duplicate.yaml']):
+            with patch('pathlib.Path.is_file', return_value=True):
+                with patch('pathlib.Path.open', unittest.mock.mock_open(read_data=duplicate_yaml)):
+                    with self.assertRaises(SystemExit) as cm:
+                        clone_runner.main()
+                    self.assertEqual(cm.exception.code, 1)
+                    self.assertIn("Duplicate key 'ARCH' found in YAML", mock_stdout.getvalue())
+
 if __name__ == '__main__':
     unittest.main()

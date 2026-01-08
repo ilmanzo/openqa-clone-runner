@@ -9,11 +9,21 @@ import argparse
 from pathlib import Path
 from typing import List, Dict, Any
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        mapping = set()
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in mapping:
+                raise ValueError(f"Duplicate key '{key}' found in YAML at line {key_node.start_mark.line + 1}")
+            mapping.add(key)
+        return super().construct_mapping(node, deep)
+
 def load_config(config_path: Path) -> Dict[str, Any]:
     try:
         with config_path.open('r', encoding='utf-8') as file:
-            return yaml.safe_load(file) or {}
-    except yaml.YAMLError as e:
+            return yaml.load(file, Loader=UniqueKeyLoader) or {}
+    except (yaml.YAMLError, ValueError) as e:
         raise ValueError(f"Error parsing YAML file '{config_path}': {e}") from e
 
 def extract_urls(output_text: str) -> List[str]:
