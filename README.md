@@ -2,6 +2,17 @@
 
 A Python utility to automate the cloning of OpenQA jobs in bulk or posting new ISO assets using YAML configuration files. This wrapper around `openqa-clone-job` and `openqa-cli` allows you to define job sources, variable overrides, and flags in a structured way.
 
+## Table of Contents
+
+- Prerequisites
+- Usage
+  - Arguments
+- Configuration File Format
+  - Variable Expansion
+- Output
+- Running Tests
+- Contributing
+
 ## Prerequisites
 
 1. **Python 3**: Ensure you have Python 3 installed.
@@ -69,10 +80,39 @@ variables:
 running with this configuration, it will result to a total of 3*2*4 = 24 ISO post API calls, which, depending on the job template, can result in tens or hundreds of job spawned. **Take care!**
 
 
+### Variable Expansion
+
+You can reference other variables within variable values using the `%VAR%` syntax. This is particularly useful for constructing dynamic strings like ISO filenames.
+
+**Example:**
+
+```yaml
+variables:
+  VERSION: "15-SP5"
+  ARCH: "x86_64"
+  ISO: "SLE-%VERSION%-%ARCH%-Media1.iso" 
+  # ISO becomes "SLE-15-SP5-x86_64-Media1.iso"
+```
+
 ## Output
 
 Upon success, the script generates a text file containing the URLs of the newly created jobs. You can feed this directly into monitoring tools:
 
 ```bash
 openqa-mon -i my_config.urls.txt
+```
+
+## Contributing
+
+Contributions are welcome! Please follow these steps:
+
+1. Fork the repository.
+2. Create a new branch (git checkout -b feature/your-feature).
+3. Commit your changes. 
+4. Push to the branch and open a Pull Request. 
+
+Please ensure that you run the tests before submitting: 
+
+```bash
+python3 -m unittest test_clone_runner.py
 ```

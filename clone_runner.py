@@ -14,8 +14,7 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         with config_path.open('r', encoding='utf-8') as file:
             return yaml.safe_load(file) or {}
     except yaml.YAMLError as e:
-        print(f"Error parsing YAML file '{config_path}': {e}")
-        sys.exit(1)
+        raise ValueError(f"Error parsing YAML file '{config_path}': {e}") from e
 
 def extract_urls(output_text: str) -> List[str]:
     """Parses output looking for: '- jobname -> https://url...' """
@@ -27,15 +26,58 @@ def validate_variables(variables: Dict[str, Any]) -> None:
         return
     for key, value in variables.items():
         if key != key.upper():
-            print(f"Error: Variable '{key}' must be uppercase.")
-            sys.exit(1)
+            raise ValueError(f"Error: Variable '{key}' must be uppercase.")
         if isinstance(value, str) and not value:
-            print(f"Error: Variable '{key}' cannot be an empty string.")
-            sys.exit(1)
+            raise ValueError(f"Error: Variable '{key}' cannot be an empty string.")
         if isinstance(value, list):
             if any(isinstance(item, str) and not item for item in value):
-                print(f"Error: Variable '{key}' contains an empty string in the list.")
-                sys.exit(1)
+                raise ValueError(f"Error: Variable '{key}' contains an empty string in the list.")
+
+def expand_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Iteratively expands variables referencing other variables (e.g. %VAR%).
+    Returns a new dictionary with expanded values.
+    """
+    expanded_vars = variables.copy()
+    limit_hit = True
+    for _ in range(5):
+        changes = 0
+        for key, val in expanded_vars.items():
+            if isinstance(val, str) and '%' in val:
+                new_val = re.sub(r'%(\w+)%', lambda m: str(expanded_vars.get(m.group(1), m.group(0))), val)
+                if new_val != val:
+                    expanded_vars[key] = new_val
+                    changes += 1
+        if changes == 0:
+            limit_hit = False
+            break
+
+    if limit_hit:
+        print("Warning: Variable expansion hit the iteration limit (5). Circular dependency or deep nesting detected.")
+
+    # Check for undefined variables remaining in values
+    for key, val in expanded_vars.items():
+        if isinstance(val, str) and '%' in val:
+            for var_name in set(re.findall(r'%(\w+)%', val)):
+                if var_name not in expanded_vars:
+                    print(f"Warning: Variable '%{var_name}%' referenced in '{key}' is not defined.")
+
+    return expanded_vars
+
+def execute_command(command: List[str], dry_run: bool, error_context: str) -> str | None:
+    """Executes a subprocess command, handling dry-run and errors."""
+    if dry_run:
+        print(f"[DRY RUN] Would execute: {' '.join(command)}")
+        return None
+
+    try:
+        result = subprocess.run(command, check=True, text=True, capture_output=True)
+        print(result.stdout)
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing {error_context}")
+        print(e.stderr)
+        return None
 
 def run_clone_jobs(jobs_to_clone: List[str], flags: List[str], variables: Dict[str, Any], dry_run: bool) -> List[str]:
     new_urls = []
@@ -48,29 +90,14 @@ def run_clone_jobs(jobs_to_clone: List[str], flags: List[str], variables: Dict[s
 
         print(f"\nProcessing: {job_url}")
 
-        if dry_run:
-            print(f"[DRY RUN] Would execute: {' '.join(command)}")
-            continue
-
-        try:
-            result = subprocess.run(
-                command,
-                check=True,
-                text=True,
-                capture_output=True
-            )
-            print(result.stdout)
-
-            extracted = extract_urls(result.stdout)
+        output = execute_command(command, dry_run, f"clone for {job_url}")
+        if output:
+            extracted = extract_urls(output)
             if extracted:
                 print(f"   Extracted {len(extracted)} new job URLs.")
                 new_urls.extend(extracted)
             else:
                 print("   No new job URLs found in output.")
-
-        except subprocess.CalledProcessError as e:
-            print(f"Error executing clone for {job_url}")
-            print(e.stderr)
     return new_urls
 
 def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> List[str]:
@@ -82,8 +109,13 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
         sys.exit(1)
 
     # Separate scalar variables and list variables for expansion
-    scalars = {k: v for k, v in variables.items() if not isinstance(v, list) and v is not None}
-    lists = {k: v for k, v in variables.items() if isinstance(v, list)}
+    scalars = {}
+    lists = {}
+    for k, v in variables.items():
+        if isinstance(v, list):
+            lists[k] = v
+        elif v is not None:
+            scalars[k] = v
 
     # Generate all combinations of list variables
     list_keys = list(lists.keys())
@@ -92,68 +124,39 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
 
     all_new_urls = []
 
+    # Determine host for URL construction once
+    host = config.get('host', 'https://openqa.suse.de')
+    if 'host' not in config:
+        if '--osd' in flags:
+            host = 'https://openqa.suse.de'
+        elif '--o3' in flags:
+            host = 'https://openqa.opensuse.org'
+    host = host.rstrip('/')
+
     for combo in combinations:
         # Merge scalars with current combination
         current_vars = scalars.copy()
         for i, key in enumerate(list_keys):
             current_vars[key] = combo[i]
 
-        # Expand variables referring to other variables (e.g. %ARCH%)
-        for _ in range(5):
-            changes = 0
-            for key, val in current_vars.items():
-                if isinstance(val, str) and '%' in val:
-                    new_val = re.sub(r'%(\w+)%', lambda m: str(current_vars.get(m.group(1), m.group(0))), val)
-                    if new_val != val:
-                        current_vars[key] = new_val
-                        changes += 1
-            if changes == 0:
-                break
-
-        # Check for undefined variables remaining in values
-        for key, val in current_vars.items():
-            if isinstance(val, str) and '%' in val:
-                for var_name in set(re.findall(r'%(\w+)%', val)):
-                    if var_name not in current_vars:
-                        print(f"Warning: Variable '%{var_name}%' referenced in '{key}' is not defined.")
+        current_vars = expand_variables(current_vars)
 
         # Construct command
         command = ["openqa-cli", "api", "-X", "post", "isos"] + flags
         for key, value in current_vars.items():
             command.append(f"{key}={value}")
 
-        if dry_run:
-            print(f"[DRY RUN] Would execute: {' '.join(command)}")
-            continue
-
-        try:
-            result = subprocess.run(command, check=True, text=True, capture_output=True)
-            print(result.stdout)
-
+        output = execute_command(command, dry_run, "ISO post command")
+        if output:
             try:
-                data = json.loads(result.stdout)
+                data = json.loads(output)
                 job_ids = data.get('ids', [])
-
-                # Determine host for URL construction
-                host = config.get('host', 'https://openqa.suse.de')
-                if 'host' not in config:
-                    if '--osd' in flags:
-                        host = 'https://openqa.suse.de'
-                    elif '--o3' in flags:
-                        host = 'https://openqa.opensuse.org'
-                host = host.rstrip('/')
 
                 if job_ids:
                     print(f"   Extracted {len(job_ids)} new job IDs.")
                     all_new_urls.extend([f"{host}/t{jid}" for jid in job_ids])
             except json.JSONDecodeError:
                 print("   Warning: Output was not valid JSON. Could not extract job IDs.")
-
-        except subprocess.CalledProcessError as e:
-            print(f"Error executing ISO post command")
-            print(e.stderr)
-            # We don't exit here to allow other combinations to proceed
-            # sys.exit(1)
 
     return all_new_urls
 
@@ -205,16 +208,17 @@ Options:
 """)
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="OpenQA Clone Automator")
+    parser = argparse.ArgumentParser(description="OpenQA Clone Automator", add_help=False)
+    parser.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
     parser.add_argument("-c", "--config", type=Path, help="Path to YAML config file")
     # Output is now optional; if not provided, we generate it from the config name
     parser.add_argument("-o", "--output", type=Path, help="Custom output file path (optional)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     args = parser.parse_args()
 
-    if not args.config:
+    if args.help or not args.config:
         print_help_page()
-        sys.exit(1)
+        sys.exit(0 if args.help else 1)
 
     # Determine output filename automatically if not provided
     if args.output:
@@ -223,16 +227,19 @@ def main() -> None:
         # e.g., 'configs/my_test.yaml' -> 'my_test.urls.txt'
         output_file = args.config.with_name(f"{args.config.stem}.urls.txt")
 
-    if not args.config.exists():
+    if not args.config.is_file():
         print(f"Error: Config file '{args.config}' not found.")
         sys.exit(1)
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+        variables = config.get('variables', {})
+        validate_variables(variables)
+    except ValueError as e:
+        print(e)
+        sys.exit(1)
+
     flags = config.get('flags', [])
-    variables = config.get('variables', {})
-
-    validate_variables(variables)
-
     jobs_to_clone = config.get('jobs_to_clone', [])
     if jobs_to_clone:
         print(f"Starting clone process using config: {args.config}")
