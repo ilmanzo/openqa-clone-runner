@@ -22,6 +22,21 @@ def extract_urls(output_text: str) -> List[str]:
     url_pattern = re.compile(r"->\s+(https?://\S+)")
     return url_pattern.findall(output_text)
 
+def validate_variables(variables: Dict[str, Any]) -> None:
+    if not variables:
+        return
+    for key, value in variables.items():
+        if key != key.upper():
+            print(f"Error: Variable '{key}' must be uppercase.")
+            sys.exit(1)
+        if isinstance(value, str) and not value:
+            print(f"Error: Variable '{key}' cannot be an empty string.")
+            sys.exit(1)
+        if isinstance(value, list):
+            if any(isinstance(item, str) and not item for item in value):
+                print(f"Error: Variable '{key}' contains an empty string in the list.")
+                sys.exit(1)
+
 def run_clone_jobs(jobs_to_clone: List[str], flags: List[str], variables: Dict[str, Any], dry_run: bool) -> List[str]:
     new_urls = []
     for job_url in jobs_to_clone:
@@ -83,6 +98,25 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
         for i, key in enumerate(list_keys):
             current_vars[key] = combo[i]
 
+        # Expand variables referring to other variables (e.g. %ARCH%)
+        for _ in range(5):
+            changes = 0
+            for key, val in current_vars.items():
+                if isinstance(val, str) and '%' in val:
+                    new_val = re.sub(r'%(\w+)%', lambda m: str(current_vars.get(m.group(1), m.group(0))), val)
+                    if new_val != val:
+                        current_vars[key] = new_val
+                        changes += 1
+            if changes == 0:
+                break
+
+        # Check for undefined variables remaining in values
+        for key, val in current_vars.items():
+            if isinstance(val, str) and '%' in val:
+                for var_name in set(re.findall(r'%(\w+)%', val)):
+                    if var_name not in current_vars:
+                        print(f"Warning: Variable '%{var_name}%' referenced in '{key}' is not defined.")
+
         # Construct command
         command = ["openqa-cli", "api", "-X", "post", "isos"] + flags
         for key, value in current_vars.items():
@@ -123,13 +157,64 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
 
     return all_new_urls
 
+def print_help_page() -> None:
+    print("""OpenQA Clone Automator
+
+Usage:
+    clone_runner.py -c <config.yaml> [options]
+
+Description:
+    Automates cloning of OpenQA jobs or posting of ISOs based on a YAML configuration.
+
+Options:
+    -c, --config    Path to the YAML configuration file.
+    -o, --output    Custom output file path (optional).
+    --dry-run       Print commands without executing.
+
+--- Configuration Examples ---
+
+[1] Clone Jobs Mode
+    Use this to clone existing jobs with modified variables.
+
+    # config_clone.yaml
+    jobs_to_clone:
+      - https://openqa.suse.de/tests/123456
+
+    variables:
+      ARCH: x86_64
+      BUILD: '150'
+
+    flags:
+      - --skip-chained-deps
+
+[2] ISO Post Mode
+    Use this to post ISOs and trigger new jobs.
+
+    # config_iso.yaml
+    variables:
+      DISTRI: sle
+      VERSION: 15-SP5
+      FLAVOR: [Online, Full]
+      ARCH: x86_64
+      BUILD: '150'
+      _GROUP_ID: 100
+      ISO: 'SLE-%VERSION%-%FLAVOR%-%ARCH%-Build%BUILD%-Media1.iso'
+
+    flags:
+      - --osd
+""")
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="OpenQA Clone Automator")
-    parser.add_argument("-c", "--config", required=True, type=Path, help="Path to YAML config file")
+    parser.add_argument("-c", "--config", type=Path, help="Path to YAML config file")
     # Output is now optional; if not provided, we generate it from the config name
     parser.add_argument("-o", "--output", type=Path, help="Custom output file path (optional)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     args = parser.parse_args()
+
+    if not args.config:
+        print_help_page()
+        sys.exit(1)
 
     # Determine output filename automatically if not provided
     if args.output:
@@ -145,6 +230,8 @@ def main() -> None:
     config = load_config(args.config)
     flags = config.get('flags', [])
     variables = config.get('variables', {})
+
+    validate_variables(variables)
 
     jobs_to_clone = config.get('jobs_to_clone', [])
     if jobs_to_clone:
