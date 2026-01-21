@@ -30,7 +30,7 @@ class TestValidateVariables(unittest.TestCase):
         variables = {'arch': 'x86_64'}
         with self.assertRaises(ValueError) as cm:
             clone_runner.validate_variables(variables)
-        
+
         self.assertEqual(str(cm.exception), "Error: Variable 'arch' must be uppercase.")
 
     def test_empty_string_value(self):
@@ -38,7 +38,7 @@ class TestValidateVariables(unittest.TestCase):
         variables = {'ARCH': ''}
         with self.assertRaises(ValueError) as cm:
             clone_runner.validate_variables(variables)
-            
+
         self.assertEqual(str(cm.exception), "Error: Variable 'ARCH' cannot be an empty string.")
 
     def test_empty_string_in_list(self):
@@ -46,7 +46,7 @@ class TestValidateVariables(unittest.TestCase):
         variables = {'FLAVORS': ['DVD', '']}
         with self.assertRaises(ValueError) as cm:
             clone_runner.validate_variables(variables)
-            
+
         self.assertEqual(str(cm.exception), "Error: Variable 'FLAVORS' contains an empty string in the list.")
 
     def test_non_string_values(self):
@@ -108,7 +108,7 @@ class TestCloneRunnerCLI(unittest.TestCase):
     @patch('sys.stdout', new_callable=StringIO)
     def test_missing_config_file(self, mock_stdout: StringIO):
         """Test that a missing config file triggers an error."""
-        with patch('sys.argv', ['clone_runner.py', '-c', 'non_existent.yaml']):
+        with patch('sys.argv', ['clone_runner.py', 'non_existent.yaml']):
             with self.assertRaises(SystemExit) as cm:
                 clone_runner.main()
             self.assertEqual(cm.exception.code, 1)
@@ -119,7 +119,7 @@ class TestCloneRunnerCLI(unittest.TestCase):
         """Test that a malformed YAML file triggers an error."""
         malformed_yaml = "key: - value\n  - another_value: oops"  # bad indentation
 
-        with patch('sys.argv', ['clone_runner.py', '-c', 'malformed.yaml']):
+        with patch('sys.argv', ['clone_runner.py', 'malformed.yaml']):
             # Mock is_file to return True, and open to return the malformed data
             with patch('pathlib.Path.is_file', return_value=True):
                 with patch('pathlib.Path.open', unittest.mock.mock_open(read_data=malformed_yaml)):
@@ -130,64 +130,64 @@ class TestCloneRunnerCLI(unittest.TestCase):
                     self.assertIn("Error parsing YAML file 'malformed.yaml'", mock_stdout.getvalue())
 
     @patch('subprocess.run')
-    @patch('clone_runner.load_config')
+    @patch('clone_runner.load_configs')
     @patch('pathlib.Path.is_file')
     @patch('sys.stdout', new_callable=StringIO)
-    def test_dry_run_flag(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_config: MagicMock, mock_subprocess: MagicMock):
+    def test_dry_run_flag(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
         """Test that the --dry-run flag prevents execution and prints dry-run message."""
         mock_is_file.return_value = True
-        mock_load_config.return_value = {
+        mock_load_configs.return_value = [{
             'jobs_to_clone': ['https://example.com/t1'],
             'variables': {'ARCH': 'x86_64'}
-        }
-        
-        with patch('sys.argv', ['clone_runner.py', '-c', 'dummy.yaml', '--dry-run']):
+        }]
+
+        with patch('sys.argv', ['clone_runner.py', 'dummy.yaml', '--dry-run']):
             clone_runner.main()
-            
+
         output = mock_stdout.getvalue()
         self.assertIn("[DRY RUN] Would execute:", output)
         self.assertIn("openqa-clone-job", output)
         mock_subprocess.assert_not_called()
 
     @patch('subprocess.run')
-    @patch('clone_runner.load_config')
+    @patch('clone_runner.load_configs')
     @patch('pathlib.Path.is_file')
     @patch('sys.stdout', new_callable=StringIO)
-    def test_iso_post_dry_run(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_config: MagicMock, mock_subprocess: MagicMock):
+    def test_iso_post_dry_run(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
         """Test that the ISO post mode respects the --dry-run flag."""
         mock_is_file.return_value = True
         # Configuration for ISO post mode (no jobs_to_clone, required vars present)
-        mock_load_config.return_value = {
+        mock_load_configs.return_value = [{
             'variables': {
                 'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
                 'ARCH': 'x86_64', '_GROUP_ID': 100
             }
-        }
-        
-        with patch('sys.argv', ['clone_runner.py', '-c', 'iso_config.yaml', '--dry-run']):
+        }]
+
+        with patch('sys.argv', ['clone_runner.py', 'iso_config.yaml', '--dry-run']):
             clone_runner.main()
-            
+
         output = mock_stdout.getvalue()
         self.assertIn("[DRY RUN] Would execute:", output)
         self.assertIn("openqa-cli api -X post isos", output)
         mock_subprocess.assert_not_called()
 
     @patch('subprocess.run')
-    @patch('clone_runner.load_config')
+    @patch('clone_runner.load_configs')
     @patch('pathlib.Path.is_file')
     @patch('sys.stdout', new_callable=StringIO)
-    def test_iso_post_variable_expansion(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_config: MagicMock, mock_subprocess: MagicMock):
+    def test_iso_post_variable_expansion(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
         """Test that variable expansion works correctly in ISO post mode."""
         mock_is_file.return_value = True
-        mock_load_config.return_value = {
+        mock_load_configs.return_value = [{
             'variables': {
                 'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
                 'ARCH': 'x86_64', '_GROUP_ID': 100,
                 'ISO': 'SLE-%VERSION%-%FLAVOR%-%ARCH%.iso'
             }
-        }
+        }]
 
-        with patch('sys.argv', ['clone_runner.py', '-c', 'iso_config.yaml', '--dry-run']):
+        with patch('sys.argv', ['clone_runner.py', 'iso_config.yaml', '--dry-run']):
             clone_runner.main()
 
         output = mock_stdout.getvalue()
@@ -197,13 +197,13 @@ class TestCloneRunnerCLI(unittest.TestCase):
         mock_subprocess.assert_not_called()
 
     @patch('subprocess.run')
-    @patch('clone_runner.load_config')
+    @patch('clone_runner.load_configs')
     @patch('pathlib.Path.is_file')
     @patch('sys.stdout', new_callable=StringIO)
-    def test_nested_variable_expansion(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_config: MagicMock, mock_subprocess: MagicMock):
+    def test_nested_variable_expansion(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
         """Test that nested variable expansion works correctly (e.g. A->B->C)."""
         mock_is_file.return_value = True
-        mock_load_config.return_value = {
+        mock_load_configs.return_value = [{
             'variables': {
                 'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
                 'ARCH': 'x86_64', '_GROUP_ID': 100,
@@ -211,31 +211,31 @@ class TestCloneRunnerCLI(unittest.TestCase):
                 'PART2': '%PART1%-Middle',
                 'FULL': '%PART2%-End'
             }
-        }
+        }]
 
-        with patch('sys.argv', ['clone_runner.py', '-c', 'iso_config.yaml', '--dry-run']):
+        with patch('sys.argv', ['clone_runner.py', 'iso_config.yaml', '--dry-run']):
             clone_runner.main()
 
         output = mock_stdout.getvalue()
         self.assertIn("FULL=Start-Middle-End", output)
 
     @patch('subprocess.run')
-    @patch('clone_runner.load_config')
+    @patch('clone_runner.load_configs')
     @patch('pathlib.Path.is_file')
     @patch('sys.stdout', new_callable=StringIO)
-    def test_circular_dependency(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_config: MagicMock, mock_subprocess: MagicMock):
+    def test_circular_dependency(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
         """Test that circular dependencies (A->B->A) are handled gracefully (no infinite loop)."""
         mock_is_file.return_value = True
-        mock_load_config.return_value = {
+        mock_load_configs.return_value = [{
             'variables': {
                 'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
                 'ARCH': 'x86_64', '_GROUP_ID': 100,
                 'VAR_A': '%VAR_B%',
                 'VAR_B': '%VAR_A%'
             }
-        }
+        }]
 
-        with patch('sys.argv', ['clone_runner.py', '-c', 'iso_config.yaml', '--dry-run']):
+        with patch('sys.argv', ['clone_runner.py', 'iso_config.yaml', '--dry-run']):
             clone_runner.main()
 
         output = mock_stdout.getvalue()
@@ -245,19 +245,19 @@ class TestCloneRunnerCLI(unittest.TestCase):
         self.assertIn("VAR_B=", output)
 
     @patch('subprocess.run')
-    @patch('clone_runner.load_config')
+    @patch('clone_runner.load_configs')
     @patch('pathlib.Path.is_file')
     @patch('sys.stdout', new_callable=StringIO)
-    def test_conflicting_host_and_flag(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_config: MagicMock, mock_subprocess: MagicMock):
+    def test_conflicting_host_and_flag(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
         """Test that conflicting host config and flags trigger an error."""
         mock_is_file.return_value = True
-        mock_load_config.return_value = {
+        mock_load_configs.return_value = [{
             'host': 'https://openqa.opensuse.org',
             'variables': {'DISTRI': 'sle', 'VERSION': '15', 'FLAVOR': 'Online', 'ARCH': 'x86_64', '_GROUP_ID': 100},
             'flags': ['--osd']
-        }
+        }]
 
-        with patch('sys.argv', ['clone_runner.py', '-c', 'conflict.yaml', '--dry-run']):
+        with patch('sys.argv', ['clone_runner.py', 'conflict.yaml', '--dry-run']):
             with self.assertRaises(SystemExit) as cm:
                 clone_runner.main()
 
@@ -269,13 +269,144 @@ class TestCloneRunnerCLI(unittest.TestCase):
         """Test that duplicate keys in YAML trigger an error."""
         duplicate_yaml = "variables:\n  ARCH: x86_64\n  ARCH: i586"
 
-        with patch('sys.argv', ['clone_runner.py', '-c', 'duplicate.yaml']):
+        with patch('sys.argv', ['clone_runner.py', 'duplicate.yaml']):
             with patch('pathlib.Path.is_file', return_value=True):
                 with patch('pathlib.Path.open', unittest.mock.mock_open(read_data=duplicate_yaml)):
                     with self.assertRaises(SystemExit) as cm:
                         clone_runner.main()
                     self.assertEqual(cm.exception.code, 1)
                     self.assertIn("Duplicate key 'ARCH' found in YAML", mock_stdout.getvalue())
+
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_multiple_configs_separate_outputs(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
+        """Test that multiple config files produce separate output files."""
+        mock_is_file.return_value = True
+        mock_load_configs.side_effect = [
+            [{'jobs_to_clone': ['https://example.com/t1'], 'variables': {}}],
+            [{'jobs_to_clone': ['https://example.com/t2'], 'variables': {}}]
+        ]
+
+        # Mock subprocess to return output containing a URL
+        mock_subprocess.return_value.stdout = "-> https://new/job"
+
+        mock_file = unittest.mock.mock_open()
+
+        with patch('sys.argv', ['clone_runner.py', 'config1.yaml', 'config2.yaml']):
+            with patch('pathlib.Path.open', mock_file):
+                clone_runner.main()
+
+        self.assertEqual(mock_load_configs.call_count, 2)
+
+        # Verify that open was called twice with different filenames
+        # mock_file is the mock for Path.open. When called, the first arg is the Path instance (self).
+        open_calls = mock_file.call_args_list
+        self.assertEqual(len(open_calls), 2)
+
+        self.assertIn("Success! 1 URLs saved to 'config1.urls.txt'", mock_stdout.getvalue())
+        self.assertIn("Success! 1 URLs saved to 'config2.urls.txt'", mock_stdout.getvalue())
+
+    @patch('clone_runner.run_clone_jobs')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_multidoc_isolation(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_run_clone):
+        """Test that variables do not leak between documents in the same file."""
+        mock_is_file.return_value = True
+        mock_load_configs.return_value = [
+            {'jobs_to_clone': ['j1'], 'variables': {'A': '1'}},
+            {'jobs_to_clone': ['j2'], 'variables': {'B': '2'}}
+        ]
+        mock_run_clone.return_value = []
+
+        with patch('sys.argv', ['clone_runner.py', 'multidoc.yaml']):
+            clone_runner.main()
+
+        args1 = mock_run_clone.call_args_list[0]
+        args2 = mock_run_clone.call_args_list[1]
+
+        vars1 = args1[0][2]
+        vars2 = args2[0][2]
+
+        self.assertIn('A', vars1)
+        self.assertNotIn('B', vars1)
+        self.assertIn('B', vars2)
+        self.assertNotIn('A', vars2)
+
+    @patch('clone_runner.run_clone_jobs')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_multiple_files_variable_isolation(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_run_clone):
+        """Test that variables do not leak between different configuration files."""
+        mock_is_file.return_value = True
+
+        # Setup mock to return different configs for sequential calls
+        mock_load_configs.side_effect = [
+            [{'jobs_to_clone': ['j1'], 'variables': {'VAR_FILE1': '1'}}],
+            [{'jobs_to_clone': ['j2'], 'variables': {'VAR_FILE2': '2'}}]
+        ]
+
+        mock_run_clone.return_value = []
+
+        with patch('sys.argv', ['clone_runner.py', 'file1.yaml', 'file2.yaml']):
+            clone_runner.main()
+
+        self.assertEqual(mock_run_clone.call_count, 2)
+
+        # Check arguments for first call (file1)
+        vars1 = mock_run_clone.call_args_list[0][0][2]
+        self.assertIn('VAR_FILE1', vars1)
+        self.assertNotIn('VAR_FILE2', vars1)
+
+        # Check arguments for second call (file2)
+        vars2 = mock_run_clone.call_args_list[1][0][2]
+        self.assertIn('VAR_FILE2', vars2)
+        self.assertNotIn('VAR_FILE1', vars2)
+
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_multiple_configs_one_missing(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
+        """Test that if one of multiple config files is missing, execution stops with error."""
+        mock_subprocess.return_value.stdout = ""
+        # First file exists, second does not
+        mock_is_file.side_effect = [True, False]
+
+        # load_configs called only for the existing file
+        mock_load_configs.return_value = [{'jobs_to_clone': ['j1'], 'variables': {}}]
+
+        with patch('sys.argv', ['clone_runner.py', 'exist.yaml', 'missing.yaml']):
+            with self.assertRaises(SystemExit) as cm:
+                clone_runner.main()
+
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Error: Config file 'missing.yaml' not found.", mock_stdout.getvalue())
+
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_multiple_configs_one_invalid(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
+        """Test that if one of multiple config files is invalid, execution stops with error."""
+        mock_subprocess.return_value.stdout = ""
+        mock_is_file.return_value = True
+
+        # First call succeeds, second raises ValueError
+        mock_load_configs.side_effect = [
+            [{'jobs_to_clone': ['j1'], 'variables': {}}],
+            ValueError("Invalid YAML")
+        ]
+
+        with patch('sys.argv', ['clone_runner.py', 'valid.yaml', 'invalid.yaml']):
+            with self.assertRaises(SystemExit) as cm:
+                clone_runner.main()
+
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Invalid YAML", mock_stdout.getvalue())
 
 if __name__ == '__main__':
     unittest.main()

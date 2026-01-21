@@ -19,10 +19,10 @@ class UniqueKeyLoader(yaml.SafeLoader):
             mapping.add(key)
         return super().construct_mapping(node, deep)
 
-def load_config(config_path: Path) -> Dict[str, Any]:
+def load_configs(config_path: Path) -> List[Dict[str, Any]]:
     try:
         with config_path.open('r', encoding='utf-8') as file:
-            return yaml.load(file, Loader=UniqueKeyLoader) or {}
+            return [doc for doc in yaml.load_all(file, Loader=UniqueKeyLoader) if doc is not None]
     except (yaml.YAMLError, ValueError) as e:
         raise ValueError(f"Error parsing YAML file '{config_path}': {e}") from e
 
@@ -182,13 +182,12 @@ def print_help_page() -> None:
     print("""OpenQA Clone Automator
 
 Usage:
-    clone_runner.py -c <config.yaml> [options]
+    clone_runner.py <config.yaml>... [options]
 
 Description:
     Automates cloning of OpenQA jobs or posting of ISOs based on a YAML configuration.
 
 Options:
-    -c, --config    Path to the YAML configuration file.
     -o, --output    Custom output file path (optional).
     --dry-run       Print commands without executing.
 
@@ -228,55 +227,61 @@ Options:
 def main() -> None:
     parser = argparse.ArgumentParser(description="OpenQA Clone Automator", add_help=False)
     parser.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
-    parser.add_argument("-c", "--config", type=Path, help="Path to YAML config file")
+    parser.add_argument("config_files", type=Path, nargs='*', help="Path to YAML config file(s)")
     # Output is now optional; if not provided, we generate it from the config name
     parser.add_argument("-o", "--output", type=Path, help="Custom output file path (optional)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     args = parser.parse_args()
 
-    if args.help or not args.config:
+    if args.help or not args.config_files:
         print_help_page()
         sys.exit(0 if args.help else 1)
 
-    # Determine output filename automatically if not provided
-    if args.output:
-        output_file = args.output
-    else:
-        # e.g., 'configs/my_test.yaml' -> 'my_test.urls.txt'
-        output_file = args.config.with_name(f"{args.config.stem}.urls.txt")
+    # Warn if -o is used with multiple inputs, as we will ignore it or it's ambiguous
+    if args.output and len(args.config_files) > 1:
+        print("Warning: --output flag is ignored when multiple configuration files are provided. "
+              "Output files will be named based on input files.")
 
-    if not args.config.is_file():
-        print(f"Error: Config file '{args.config}' not found.")
-        sys.exit(1)
+    for config_path in args.config_files:
+        if not config_path.is_file():
+            print(f"Error: Config file '{config_path}' not found.")
+            sys.exit(1)
 
-    try:
-        config = load_config(args.config)
-        variables = config.get('variables', {})
-        validate_variables(variables)
-    except ValueError as e:
-        print(e)
-        sys.exit(1)
+        try:
+            configs = load_configs(config_path)
+        except ValueError as e:
+            print(e)
+            sys.exit(1)
 
-    flags = config.get('flags', [])
-    jobs_to_clone = config.get('jobs_to_clone', [])
-    if jobs_to_clone:
-        print(f"Starting clone process using config: {args.config}")
-        print(f"Output will be saved to: {output_file}")
-        all_new_urls = run_clone_jobs(jobs_to_clone, flags, variables, args.dry_run)
-    else:
-        print(f"No 'jobs_to_clone' found. Switching to ISO post mode.")
-        all_new_urls = run_iso_post(config, flags, args.dry_run)
+        current_file_urls = []
+        for i, config in enumerate(configs):
+            variables = config.get('variables', {})
+            validate_variables(variables)
 
-    # Save to the automatically named file
-    if not args.dry_run and all_new_urls:
-        with output_file.open("w", encoding="utf-8") as f:
-            for url in all_new_urls:
-                f.write(url + "\n")
+            flags = config.get('flags', [])
+            jobs_to_clone = config.get('jobs_to_clone', [])
 
-        print("\n" + "="*40)
-        print(f"Success! URLs saved to '{output_file}'")
-        print(f"You can now run:\n   openqa-mon -i {output_file}")
-        print("="*40)
+            doc_label = f"doc {i+1}" if len(configs) > 1 else "doc"
+
+            if jobs_to_clone:
+                print(f"Starting clone process using config from: {config_path} [{doc_label}]")
+                new_urls = run_clone_jobs(jobs_to_clone, flags, variables, args.dry_run)
+            else:
+                print(f"Starting ISO post process using config from: {config_path} [{doc_label}]")
+                new_urls = run_iso_post(config, flags, args.dry_run)
+
+            if new_urls:
+                current_file_urls.extend(new_urls)
+
+        if not args.dry_run and current_file_urls:
+            output_file = args.output if (args.output and len(args.config_files) == 1) else config_path.with_name(f"{config_path.stem}.urls.txt")
+            print("\n" + "="*40)
+            with output_file.open("w", encoding="utf-8") as f:
+                for url in current_file_urls:
+                    f.write(url + "\n")
+            print(f"Success! {len(current_file_urls)} URLs saved to '{output_file}'")
+            print(f"You can now run: openqa-mon -i {output_file}")
+            print("="*40)
 
 if __name__ == "__main__":
     main()
