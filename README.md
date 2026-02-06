@@ -75,6 +75,8 @@ variables:
   BUILD: ["73.2", "73.3", "73.4"] # Expands to 3 builds
   FLAVOR: ["Full", "Online"] # Expands to 2 flavors
   ARCH: ["x86_64", "aarch64", "s390x", "ppc64le"] # Expands to 4 architectures  
+  _GROUP_ID: 100
+  ISO: "SLE-%VERSION%-%ARCH%-Build%BUILD%-Media1.iso"
 ```
 
 running with this configuration, it will result to a total of 3*2*4 = 24 ISO post API calls, which, depending on the job template, can result in tens or hundreds of job spawned. **Take care!**

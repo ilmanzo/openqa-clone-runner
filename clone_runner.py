@@ -111,7 +111,7 @@ def run_clone_jobs(jobs_to_clone: List[str], flags: List[str], variables: Dict[s
     return new_urls
 
 def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> List[str]:
-    required_vars = ['DISTRI', 'VERSION', 'FLAVOR', 'ARCH', '_GROUP_ID']
+    required_vars = ['DISTRI', 'VERSION', 'FLAVOR', 'ARCH', '_GROUP_ID', 'ISO']
     variables = config.get('variables') or {}
     missing = [var for var in required_vars if var not in variables]
     if missing:

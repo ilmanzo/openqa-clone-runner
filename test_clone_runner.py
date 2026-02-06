@@ -160,7 +160,7 @@ class TestCloneRunnerCLI(unittest.TestCase):
         mock_load_configs.return_value = [{
             'variables': {
                 'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
-                'ARCH': 'x86_64', '_GROUP_ID': 100
+                'ARCH': 'x86_64', '_GROUP_ID': 100, 'ISO': 'dummy.iso'
             }
         }]
 
@@ -171,6 +171,27 @@ class TestCloneRunnerCLI(unittest.TestCase):
         self.assertIn("[DRY RUN] Would execute:", output)
         self.assertIn("openqa-cli api -X post isos", output)
         mock_subprocess.assert_not_called()
+
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_iso_post_missing_iso(self, mock_stdout: StringIO, mock_is_file: MagicMock, mock_load_configs: MagicMock, mock_subprocess: MagicMock):
+        """Test that missing ISO variable triggers an error in ISO post mode."""
+        mock_is_file.return_value = True
+        mock_load_configs.return_value = [{
+            'variables': {
+                'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
+                'ARCH': 'x86_64', '_GROUP_ID': 100
+            }
+        }]
+
+        with patch('sys.argv', ['clone_runner.py', 'iso_config.yaml']):
+            with self.assertRaises(SystemExit) as cm:
+                clone_runner.main()
+
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Error: Missing required variables for ISO post: ISO", mock_stdout.getvalue())
 
     @patch('subprocess.run')
     @patch('clone_runner.load_configs')
@@ -207,6 +228,7 @@ class TestCloneRunnerCLI(unittest.TestCase):
             'variables': {
                 'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
                 'ARCH': 'x86_64', '_GROUP_ID': 100,
+                'ISO': 'dummy.iso',
                 'PART1': 'Start',
                 'PART2': '%PART1%-Middle',
                 'FULL': '%PART2%-End'
@@ -230,6 +252,7 @@ class TestCloneRunnerCLI(unittest.TestCase):
             'variables': {
                 'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
                 'ARCH': 'x86_64', '_GROUP_ID': 100,
+                'ISO': 'dummy.iso',
                 'VAR_A': '%VAR_B%',
                 'VAR_B': '%VAR_A%'
             }
@@ -253,7 +276,7 @@ class TestCloneRunnerCLI(unittest.TestCase):
         mock_is_file.return_value = True
         mock_load_configs.return_value = [{
             'host': 'https://openqa.opensuse.org',
-            'variables': {'DISTRI': 'sle', 'VERSION': '15', 'FLAVOR': 'Online', 'ARCH': 'x86_64', '_GROUP_ID': 100},
+            'variables': {'DISTRI': 'sle', 'VERSION': '15', 'FLAVOR': 'Online', 'ARCH': 'x86_64', '_GROUP_ID': 100, 'ISO': 'dummy.iso'},
             'flags': ['--osd']
         }]
 
