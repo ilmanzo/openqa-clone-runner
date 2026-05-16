@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 import json
 import itertools
+import shutil
 import yaml
 import subprocess
 import re
 import sys
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any
+
+ISO_REQUIRED_VARS = {
+    'DISTRI':    'Distribution name (e.g. sle, opensuse)',
+    'VERSION':   'Product version (e.g. 15-SP5)',
+    'FLAVOR':    'Media flavor (e.g. Online, Full)',
+    'ARCH':      'Architecture (e.g. x86_64, aarch64)',
+    '_GROUP_ID': 'OpenQA job group ID (integer)',
+    'ISO':       'ISO filename, may reference other variables with %VAR%',
+}
 
 class UniqueKeyLoader(yaml.SafeLoader):
     def construct_mapping(self, node, deep=False):
@@ -44,10 +55,6 @@ def validate_variables(variables: Dict[str, Any]) -> None:
                 raise ValueError(f"Error: Variable '{key}' contains an empty string in the list.")
 
 def expand_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Iteratively expands variables referencing other variables (e.g. %VAR%).
-    Returns a new dictionary with expanded values.
-    """
     expanded_vars = variables.copy()
     limit_hit = True
     for _ in range(5):
@@ -65,17 +72,21 @@ def expand_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
     if limit_hit:
         print("Warning: Variable expansion hit the iteration limit (5). Circular dependency or deep nesting detected.")
 
-    # Check for undefined variables remaining in values
     for key, val in expanded_vars.items():
         if isinstance(val, str) and '%' in val:
             for var_name in set(re.findall(r'%(\w+)%', val)):
                 if var_name not in expanded_vars:
-                    print(f"Warning: Variable '%{var_name}%' referenced in '{key}' is not defined.")
+                    raise ValueError(f"Error: Variable '%{var_name}%' referenced in '{key}' is not defined.")
 
     return expanded_vars
 
+def check_required_tool(tool: str) -> None:
+    if shutil.which(tool) is None:
+        print(f"Error: Required tool '{tool}' not found in PATH.")
+        print(f"  Install the openqa-client package or ensure '{tool}' is on your PATH.")
+        sys.exit(2)
+
 def execute_command(command: List[str], dry_run: bool, error_context: str) -> str | None:
-    """Executes a subprocess command, handling dry-run and errors."""
     if dry_run:
         print(f"[DRY RUN] Would execute: {' '.join(command)}")
         return None
@@ -85,40 +96,52 @@ def execute_command(command: List[str], dry_run: bool, error_context: str) -> st
         print(result.stdout)
         return result.stdout
     except subprocess.CalledProcessError as e:
-        print(f"Error executing {error_context}")
-        print(e.stderr)
+        print(f"Error executing {error_context} (exit code {e.returncode})")
+        if e.stderr:
+            print(e.stderr.strip())
+        print("  Skipping and continuing with remaining jobs.")
         return None
 
 def run_clone_jobs(jobs_to_clone: List[str], flags: List[str], variables: Dict[str, Any], dry_run: bool) -> List[str]:
+    check_required_tool("openqa-clone-job")
     new_urls = []
-    for job_url in jobs_to_clone:
+    total = len(jobs_to_clone)
+    dry_run_count = 0
+
+    for idx, job_url in enumerate(jobs_to_clone, 1):
         command = ["openqa-clone-job", "--within-instance", job_url] + flags
-        # Add variables
         for key, value in variables.items():
             if value is not None:
                 command.append(f"{key}={value}")
 
-        print(f"\nProcessing: {job_url}")
+        print(f"\nProcessing [{idx}/{total}]: {job_url}")
 
         output = execute_command(command, dry_run, f"clone for {job_url}")
-        if output:
+        if dry_run:
+            dry_run_count += 1
+        elif output:
             extracted = extract_urls(output)
             if extracted:
                 print(f"   Extracted {len(extracted)} new job URLs.")
                 new_urls.extend(extracted)
             else:
                 print("   No new job URLs found in output.")
+
+    if dry_run and dry_run_count:
+        print(f"\nDry run complete. Would have executed {dry_run_count} command(s).")
+
     return new_urls
 
 def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> List[str]:
-    required_vars = ['DISTRI', 'VERSION', 'FLAVOR', 'ARCH', '_GROUP_ID', 'ISO']
+    check_required_tool("openqa-cli")
     variables = config.get('variables') or {}
-    missing = [var for var in required_vars if var not in variables]
+    missing = [var for var in ISO_REQUIRED_VARS if var not in variables]
     if missing:
         print(f"Error: Missing required variables for ISO post: {', '.join(missing)}")
+        for var in missing:
+            print(f"  {var}: {ISO_REQUIRED_VARS[var]}")
         sys.exit(1)
 
-    # Separate scalar variables and list variables for expansion
     scalars = {}
     lists = {}
     for k, v in variables.items():
@@ -127,14 +150,12 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
         elif v is not None:
             scalars[k] = v
 
-    # Generate all combinations of list variables
     list_keys = list(lists.keys())
     list_values = list(lists.values())
     combinations = list(itertools.product(*list_values)) if list_values else [()]
 
     all_new_urls = []
 
-    # Determine host for URL construction once
     host = config.get('host')
     if host:
         if '--osd' in flags and 'suse.de' not in host:
@@ -151,35 +172,98 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
             host = 'https://openqa.opensuse.org'
     host = host.rstrip('/')
 
-    for combo in combinations:
-        # Merge scalars with current combination
+    total = len(combinations)
+    dry_run_count = 0
+
+    for idx, combo in enumerate(combinations, 1):
         current_vars = scalars.copy()
         for i, key in enumerate(list_keys):
             current_vars[key] = combo[i]
 
         current_vars = expand_variables(current_vars)
 
-        # Construct command
         command = ["openqa-cli", "api", "-X", "post", "isos"] + flags
         for key, value in current_vars.items():
             command.append(f"{key}={value}")
 
+        if total > 1:
+            print(f"\nCombination [{idx}/{total}]:")
+
         output = execute_command(command, dry_run, "ISO post command")
-        if output:
+        if dry_run:
+            dry_run_count += 1
+        elif output:
             try:
                 data = json.loads(output)
                 job_ids = data.get('ids', [])
-
                 if job_ids:
-                    print(f"   Extracted {len(job_ids)} new job IDs.")
-                    all_new_urls.extend([f"{host}/t{jid}" for jid in job_ids])
+                    urls = [f"{host}/t{jid}" for jid in job_ids]
+                    print(f"   Extracted {len(job_ids)} new job IDs:")
+                    for url in urls:
+                        print(f"     {url}")
+                    all_new_urls.extend(urls)
             except json.JSONDecodeError:
                 print("   Warning: Output was not valid JSON. Could not extract job IDs.")
 
+    if dry_run and dry_run_count:
+        print(f"\nDry run complete. Would have executed {dry_run_count} command(s).")
+
     return all_new_urls
 
+def _count_iso_combinations(config: Dict[str, Any]) -> int:
+    variables = config.get('variables') or {}
+    counts = [len(v) for v in variables.values() if isinstance(v, list)]
+    result = 1
+    for c in counts:
+        result *= c
+    return result
+
+def validate_config(config_path: Path, configs: List[Dict[str, Any]]) -> None:
+    for i, config in enumerate(configs):
+        doc_label = f"doc {i+1}" if len(configs) > 1 else ""
+        header = f"Config: {config_path}"
+        if doc_label:
+            header += f" [{doc_label}]"
+
+        variables = config.get('variables', {})
+        flags = config.get('flags', [])
+        jobs_to_clone = config.get('jobs_to_clone', [])
+
+        if jobs_to_clone:
+            print(f"{header} — Clone jobs mode")
+            print(f"  Jobs to clone : {len(jobs_to_clone)}")
+            if variables:
+                var_str = "  ".join(f"{k}={v}" for k, v in variables.items())
+                print(f"  Variables     : {var_str}")
+            if flags:
+                print(f"  Flags         : {' '.join(flags)}")
+            print(f"  Commands      : {len(jobs_to_clone)}")
+        else:
+            print(f"{header} — ISO post mode")
+            missing = [v for v in ISO_REQUIRED_VARS if v not in variables]
+            present = {k: v for k, v in variables.items() if k in ISO_REQUIRED_VARS}
+            extra = {k: v for k, v in variables.items() if k not in ISO_REQUIRED_VARS}
+            for var, val in present.items():
+                print(f"  {var:<14}: {val}")
+            if extra:
+                for var, val in extra.items():
+                    print(f"  {var:<14}: {val}  (extra)")
+            if missing:
+                print(f"  Missing       : {', '.join(missing)}")
+                for var in missing:
+                    print(f"    {var}: {ISO_REQUIRED_VARS[var]}")
+            if flags:
+                print(f"  Flags         : {' '.join(flags)}")
+            combos = _count_iso_combinations(config)
+            print(f"  Combinations  : {combos}")
+            print(f"  Commands      : {combos}")
+        print()
+
 def print_help_page() -> None:
-    print("""OpenQA Clone Automator
+    required_vars_table = "\n".join(
+        f"      {var:<14} {desc}" for var, desc in ISO_REQUIRED_VARS.items()
+    )
+    print(f"""OpenQA Clone Automator
 
 Usage:
     clone_runner.py <config.yaml>... [options]
@@ -188,8 +272,9 @@ Description:
     Automates cloning of OpenQA jobs or posting of ISOs based on a YAML configuration.
 
 Options:
-    -o, --output    Custom output file path (optional).
+    -o, --output    Custom output file path (optional, single config only).
     --dry-run       Print commands without executing.
+    --validate      Show a summary of what each config would do, then exit.
 
 --- Configuration Examples ---
 
@@ -210,37 +295,44 @@ Options:
 [2] ISO Post Mode
     Use this to post ISOs and trigger new jobs.
 
+    Required variables:
+{required_vars_table}
+
     # config_iso.yaml
     variables:
       DISTRI: sle
       VERSION: 15-SP5
-      FLAVOR: [Online, Full]
+      FLAVOR: [Online, Full]   # list = one command per value
       ARCH: x86_64
       BUILD: '150'
       _GROUP_ID: 100
       ISO: 'SLE-%VERSION%-%FLAVOR%-%ARCH%-Build%BUILD%-Media1.iso'
 
     flags:
-      - --osd
+      - --osd   # target openqa.suse.de (or --o3 for openqa.opensuse.org)
 """)
+
+def _make_output_path(config_path: Path, timestamp: str) -> Path:
+    return config_path.with_name(f"{config_path.stem}.{timestamp}.urls.txt")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="OpenQA Clone Automator", add_help=False)
     parser.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
     parser.add_argument("config_files", type=Path, nargs='*', help="Path to YAML config file(s)")
-    # Output is now optional; if not provided, we generate it from the config name
     parser.add_argument("-o", "--output", type=Path, help="Custom output file path (optional)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+    parser.add_argument("--validate", action="store_true", help="Show config summary without executing")
     args = parser.parse_args()
 
     if args.help or not args.config_files:
         print_help_page()
         sys.exit(0 if args.help else 1)
 
-    # Warn if -o is used with multiple inputs, as we will ignore it or it's ambiguous
     if args.output and len(args.config_files) > 1:
-        print("Warning: --output flag is ignored when multiple configuration files are provided. "
-              "Output files will be named based on input files.")
+        print("Warning: --output is ignored when multiple config files are given. "
+              "Output files will be named based on each input file.")
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M")
 
     for config_path in args.config_files:
         if not config_path.is_file():
@@ -253,10 +345,18 @@ def main() -> None:
             print(e)
             sys.exit(1)
 
+        if args.validate:
+            validate_config(config_path, configs)
+            continue
+
         current_file_urls = []
         for i, config in enumerate(configs):
             variables = config.get('variables', {})
-            validate_variables(variables)
+            try:
+                validate_variables(variables)
+            except ValueError as e:
+                print(e)
+                sys.exit(1)
 
             flags = config.get('flags', [])
             jobs_to_clone = config.get('jobs_to_clone', [])
@@ -265,16 +365,24 @@ def main() -> None:
 
             if jobs_to_clone:
                 print(f"Starting clone process using config from: {config_path} [{doc_label}]")
-                new_urls = run_clone_jobs(jobs_to_clone, flags, variables, args.dry_run)
+                try:
+                    new_urls = run_clone_jobs(jobs_to_clone, flags, variables, args.dry_run)
+                except ValueError as e:
+                    print(e)
+                    sys.exit(1)
             else:
                 print(f"Starting ISO post process using config from: {config_path} [{doc_label}]")
-                new_urls = run_iso_post(config, flags, args.dry_run)
+                try:
+                    new_urls = run_iso_post(config, flags, args.dry_run)
+                except ValueError as e:
+                    print(e)
+                    sys.exit(1)
 
             if new_urls:
                 current_file_urls.extend(new_urls)
 
         if not args.dry_run and current_file_urls:
-            output_file = args.output if (args.output and len(args.config_files) == 1) else config_path.with_name(f"{config_path.stem}.urls.txt")
+            output_file = args.output if (args.output and len(args.config_files) == 1) else _make_output_path(config_path, timestamp)
             print("\n" + "="*40)
             with output_file.open("w", encoding="utf-8") as f:
                 for url in current_file_urls:
