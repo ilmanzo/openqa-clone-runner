@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import subprocess
 import unittest
 from unittest.mock import patch, MagicMock
 from io import StringIO
@@ -314,7 +315,7 @@ class TestCloneRunnerCLI(unittest.TestCase):
             {'jobs_to_clone': ['j1'], 'variables': {'A': '1'}},
             {'jobs_to_clone': ['j2'], 'variables': {'B': '2'}}
         ]
-        mock_run_clone.return_value = []
+        mock_run_clone.return_value = ([], 0)
 
         with patch('sys.argv', ['clone_runner.py', 'multidoc.yaml']):
             clone_runner.main()
@@ -337,7 +338,7 @@ class TestCloneRunnerCLI(unittest.TestCase):
             [{'jobs_to_clone': ['j1'], 'variables': {'VAR_FILE1': '1'}}],
             [{'jobs_to_clone': ['j2'], 'variables': {'VAR_FILE2': '2'}}]
         ]
-        mock_run_clone.return_value = []
+        mock_run_clone.return_value = ([], 0)
 
         with patch('sys.argv', ['clone_runner.py', 'file1.yaml', 'file2.yaml']):
             clone_runner.main()
@@ -463,6 +464,107 @@ class TestCloneRunnerCLI(unittest.TestCase):
                 clone_runner.main()
             self.assertEqual(cm.exception.code, 2)
             self.assertIn("not found in PATH", mock_stdout.getvalue())
+
+class TestFailuresAndNewCoverage(unittest.TestCase):
+
+    @WHICH_FOUND
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_clone_failure_exit_code(self, mock_stdout, mock_is_file, mock_load_configs, mock_subprocess, mock_which):
+        mock_is_file.return_value = True
+        mock_load_configs.return_value = [{'jobs_to_clone': ['https://example.com/t1'], 'variables': {}}]
+        mock_subprocess.side_effect = subprocess.CalledProcessError(1, 'openqa-clone-job', stderr='boom')
+
+        with patch('sys.argv', ['clone_runner.py', 'dummy.yaml']):
+            with self.assertRaises(SystemExit) as cm:
+                clone_runner.main()
+        self.assertEqual(cm.exception.code, 1)
+        out = mock_stdout.getvalue()
+        self.assertIn("Skipping and continuing", out)
+        self.assertIn("failed command(s)", out)
+
+    @WHICH_FOUND
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_clone_partial_failure(self, mock_stdout, mock_is_file, mock_load_configs, mock_subprocess, mock_which):
+        mock_is_file.return_value = True
+        mock_load_configs.return_value = [{'jobs_to_clone': ['https://example.com/t1', 'https://example.com/t2'], 'variables': {}}]
+
+        ok = MagicMock(stdout="-> https://new/job\n")
+        mock_subprocess.side_effect = [ok, subprocess.CalledProcessError(1, 'openqa-clone-job', stderr='boom')]
+
+        mock_file = unittest.mock.mock_open()
+        with patch('sys.argv', ['clone_runner.py', 'dummy.yaml']):
+            with patch('pathlib.Path.open', mock_file):
+                with self.assertRaises(SystemExit) as cm:
+                    clone_runner.main()
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("Success!", mock_stdout.getvalue())
+
+    @WHICH_FOUND
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_iso_post_success_extracts_urls(self, mock_stdout, mock_is_file, mock_load_configs, mock_subprocess, mock_which):
+        mock_is_file.return_value = True
+        mock_load_configs.return_value = [{
+            'variables': {'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
+                          'ARCH': 'x86_64', '_GROUP_ID': 100, 'ISO': 'dummy.iso'},
+            'flags': ['--o3'],
+        }]
+        mock_subprocess.return_value = MagicMock(stdout='{"ids": [101, 102]}')
+
+        mock_file = unittest.mock.mock_open()
+        with patch('sys.argv', ['clone_runner.py', 'iso.yaml']):
+            with patch('pathlib.Path.open', mock_file):
+                clone_runner.main()
+        out = mock_stdout.getvalue()
+        self.assertIn("https://openqa.opensuse.org/t101", out)
+        self.assertIn("https://openqa.opensuse.org/t102", out)
+        self.assertIn("Success! 2 URLs", out)
+
+    @WHICH_FOUND
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_iso_post_invalid_json(self, mock_stdout, mock_is_file, mock_load_configs, mock_subprocess, mock_which):
+        mock_is_file.return_value = True
+        mock_load_configs.return_value = [{
+            'variables': {'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
+                          'ARCH': 'x86_64', '_GROUP_ID': 100, 'ISO': 'dummy.iso'},
+        }]
+        mock_subprocess.return_value = MagicMock(stdout='not json')
+
+        with patch('sys.argv', ['clone_runner.py', 'iso.yaml']):
+            clone_runner.main()
+        self.assertIn("Output was not valid JSON", mock_stdout.getvalue())
+
+    @WHICH_FOUND
+    @patch('subprocess.run')
+    @patch('clone_runner.load_configs')
+    @patch('pathlib.Path.is_file')
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_host_passed_to_cli(self, mock_stdout, mock_is_file, mock_load_configs, mock_subprocess, mock_which):
+        mock_is_file.return_value = True
+        mock_load_configs.return_value = [{
+            'host': 'openqa.opensuse.org',
+            'variables': {'DISTRI': 'sle', 'VERSION': '15-SP5', 'FLAVOR': 'Online',
+                          'ARCH': 'x86_64', '_GROUP_ID': 100, 'ISO': 'dummy.iso'},
+        }]
+        mock_subprocess.return_value = MagicMock(stdout='{"ids": []}')
+
+        with patch('sys.argv', ['clone_runner.py', 'iso.yaml']):
+            clone_runner.main()
+        called_cmd = mock_subprocess.call_args[0][0]
+        self.assertIn('--host', called_cmd)
+        self.assertIn('https://openqa.opensuse.org', called_cmd)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
 import itertools
+import math
+import os
 import shutil
 import yaml
 import subprocess
@@ -9,7 +11,12 @@ import sys
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any
+
+class RunnerError(Exception):
+    def __init__(self, message: str, exit_code: int = 1):
+        super().__init__(message)
+        self.exit_code = exit_code
 
 ISO_REQUIRED_VARS = {
     'DISTRI':    'Distribution name (e.g. sle, opensuse)',
@@ -30,19 +37,19 @@ class UniqueKeyLoader(yaml.SafeLoader):
             mapping.add(key)
         return super().construct_mapping(node, deep)
 
-def load_configs(config_path: Path) -> List[Dict[str, Any]]:
+def load_configs(config_path: Path) -> list[dict[str, Any]]:
     try:
         with config_path.open('r', encoding='utf-8') as file:
             return [doc for doc in yaml.load_all(file, Loader=UniqueKeyLoader) if doc is not None]
     except (yaml.YAMLError, ValueError) as e:
         raise ValueError(f"Error parsing YAML file '{config_path}': {e}") from e
 
-def extract_urls(output_text: str) -> List[str]:
+def extract_urls(output_text: str) -> list[str]:
     """Parses output looking for: '- jobname -> https://url...' """
     url_pattern = re.compile(r"->\s+(https?://\S+)")
     return url_pattern.findall(output_text)
 
-def validate_variables(variables: Dict[str, Any]) -> None:
+def validate_variables(variables: dict[str, Any]) -> None:
     if not variables:
         return
     for key, value in variables.items():
@@ -54,9 +61,8 @@ def validate_variables(variables: Dict[str, Any]) -> None:
             if any(isinstance(item, str) and not item for item in value):
                 raise ValueError(f"Error: Variable '{key}' contains an empty string in the list.")
 
-def expand_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
+def expand_variables(variables: dict[str, Any]) -> dict[str, Any]:
     expanded_vars = variables.copy()
-    limit_hit = True
     for _ in range(5):
         changes = 0
         for key, val in expanded_vars.items():
@@ -66,10 +72,8 @@ def expand_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
                     expanded_vars[key] = new_val
                     changes += 1
         if changes == 0:
-            limit_hit = False
             break
-
-    if limit_hit:
+    else:
         print("Warning: Variable expansion hit the iteration limit (5). Circular dependency or deep nesting detected.")
 
     for key, val in expanded_vars.items():
@@ -82,11 +86,13 @@ def expand_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
 
 def check_required_tool(tool: str) -> None:
     if shutil.which(tool) is None:
-        print(f"Error: Required tool '{tool}' not found in PATH.")
-        print(f"  Install the openqa-client package or ensure '{tool}' is on your PATH.")
-        sys.exit(2)
+        raise RunnerError(
+            f"Error: Required tool '{tool}' not found in PATH.\n"
+            f"  Install the openqa-client package or ensure '{tool}' is on your PATH.",
+            exit_code=2,
+        )
 
-def execute_command(command: List[str], dry_run: bool, error_context: str) -> str | None:
+def execute_command(command: list[str], dry_run: bool, error_context: str) -> str | None:
     if dry_run:
         print(f"[DRY RUN] Would execute: {' '.join(command)}")
         return None
@@ -102,11 +108,11 @@ def execute_command(command: List[str], dry_run: bool, error_context: str) -> st
         print("  Skipping and continuing with remaining jobs.")
         return None
 
-def run_clone_jobs(jobs_to_clone: List[str], flags: List[str], variables: Dict[str, Any], dry_run: bool) -> List[str]:
+def run_clone_jobs(jobs_to_clone: list[str], flags: list[str], variables: dict[str, Any], dry_run: bool) -> tuple[list[str], int]:
     check_required_tool("openqa-clone-job")
     new_urls = []
     total = len(jobs_to_clone)
-    dry_run_count = 0
+    failures = 0
 
     for idx, job_url in enumerate(jobs_to_clone, 1):
         command = ["openqa-clone-job", "--within-instance", job_url] + flags
@@ -118,8 +124,10 @@ def run_clone_jobs(jobs_to_clone: List[str], flags: List[str], variables: Dict[s
 
         output = execute_command(command, dry_run, f"clone for {job_url}")
         if dry_run:
-            dry_run_count += 1
-        elif output:
+            pass
+        elif output is None:
+            failures += 1
+        else:
             extracted = extract_urls(output)
             if extracted:
                 print(f"   Extracted {len(extracted)} new job URLs.")
@@ -127,20 +135,18 @@ def run_clone_jobs(jobs_to_clone: List[str], flags: List[str], variables: Dict[s
             else:
                 print("   No new job URLs found in output.")
 
-    if dry_run and dry_run_count:
-        print(f"\nDry run complete. Would have executed {dry_run_count} command(s).")
+    if dry_run:
+        print(f"\nDry run complete. Would have executed {total} command(s).")
 
-    return new_urls
+    return new_urls, failures
 
-def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> List[str]:
+def run_iso_post(config: dict[str, Any], flags: list[str], dry_run: bool) -> tuple[list[str], int]:
     check_required_tool("openqa-cli")
     variables = config.get('variables') or {}
     missing = [var for var in ISO_REQUIRED_VARS if var not in variables]
     if missing:
-        print(f"Error: Missing required variables for ISO post: {', '.join(missing)}")
-        for var in missing:
-            print(f"  {var}: {ISO_REQUIRED_VARS[var]}")
-        sys.exit(1)
+        details = "\n".join(f"  {v}: {ISO_REQUIRED_VARS[v]}" for v in missing)
+        raise RunnerError(f"Error: Missing required variables for ISO post: {', '.join(missing)}\n{details}")
 
     scalars = {}
     lists = {}
@@ -159,21 +165,20 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
     host = config.get('host')
     if host:
         if '--osd' in flags and 'suse.de' not in host:
-            print(f"Error: Conflicting options: 'host' set to '{host}' but '--osd' flag provided.")
-            sys.exit(1)
+            raise RunnerError(f"Error: Conflicting options: 'host' set to '{host}' but '--osd' flag provided.")
         if '--o3' in flags and 'opensuse.org' not in host:
-            print(f"Error: Conflicting options: 'host' set to '{host}' but '--o3' flag provided.")
-            sys.exit(1)
+            raise RunnerError(f"Error: Conflicting options: 'host' set to '{host}' but '--o3' flag provided.")
+        if not re.match(r'^https?://', host):
+            host = f"https://{host}"
+        host = host.rstrip('/')
+        # --osd/--o3 already select the target; only inject --host when using explicit host without shortcuts
+        host_flag = [] if ('--osd' in flags or '--o3' in flags) else ['--host', host]
     else:
-        host = 'https://openqa.suse.de'
-        if '--osd' in flags:
-            host = 'https://openqa.suse.de'
-        elif '--o3' in flags:
-            host = 'https://openqa.opensuse.org'
-    host = host.rstrip('/')
+        host = 'https://openqa.opensuse.org' if '--o3' in flags else 'https://openqa.suse.de'
+        host_flag = []
 
     total = len(combinations)
-    dry_run_count = 0
+    failures = 0
 
     for idx, combo in enumerate(combinations, 1):
         current_vars = scalars.copy()
@@ -182,7 +187,7 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
 
         current_vars = expand_variables(current_vars)
 
-        command = ["openqa-cli", "api", "-X", "post", "isos"] + flags
+        command = ["openqa-cli", "api", "-X", "post", "isos"] + host_flag + flags
         for key, value in current_vars.items():
             command.append(f"{key}={value}")
 
@@ -191,7 +196,9 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
 
         output = execute_command(command, dry_run, "ISO post command")
         if dry_run:
-            dry_run_count += 1
+            pass
+        elif output is None:
+            failures += 1
         elif output:
             try:
                 data = json.loads(output)
@@ -205,20 +212,16 @@ def run_iso_post(config: Dict[str, Any], flags: List[str], dry_run: bool) -> Lis
             except json.JSONDecodeError:
                 print("   Warning: Output was not valid JSON. Could not extract job IDs.")
 
-    if dry_run and dry_run_count:
-        print(f"\nDry run complete. Would have executed {dry_run_count} command(s).")
+    if dry_run:
+        print(f"\nDry run complete. Would have executed {total} command(s).")
 
-    return all_new_urls
+    return all_new_urls, failures
 
-def _count_iso_combinations(config: Dict[str, Any]) -> int:
+def _count_iso_combinations(config: dict[str, Any]) -> int:
     variables = config.get('variables') or {}
-    counts = [len(v) for v in variables.values() if isinstance(v, list)]
-    result = 1
-    for c in counts:
-        result *= c
-    return result
+    return math.prod(len(v) for v in variables.values() if isinstance(v, list))
 
-def validate_config(config_path: Path, configs: List[Dict[str, Any]]) -> None:
+def validate_config(config_path: Path, configs: list[dict[str, Any]]) -> None:
     for i, config in enumerate(configs):
         doc_label = f"doc {i+1}" if len(configs) > 1 else ""
         header = f"Config: {config_path}"
@@ -312,9 +315,6 @@ Options:
       - --osd   # target openqa.suse.de (or --o3 for openqa.opensuse.org)
 """)
 
-def _make_output_path(config_path: Path, timestamp: str) -> Path:
-    return config_path.with_name(f"{config_path.stem}.{timestamp}.urls.txt")
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="OpenQA Clone Automator", add_help=False)
     parser.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
@@ -322,6 +322,7 @@ def main() -> None:
     parser.add_argument("-o", "--output", type=Path, help="Custom output file path (optional)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     parser.add_argument("--validate", action="store_true", help="Show config summary without executing")
+    parser.add_argument("--watch", action="store_true", help="Launch openqa-mon on the output file when done")
     args = parser.parse_args()
 
     if args.help or not args.config_files:
@@ -333,6 +334,7 @@ def main() -> None:
               "Output files will be named based on each input file.")
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M")
+    total_failures = 0
 
     for config_path in args.config_files:
         if not config_path.is_file():
@@ -363,33 +365,41 @@ def main() -> None:
 
             doc_label = f"doc {i+1}" if len(configs) > 1 else "doc"
 
-            if jobs_to_clone:
-                print(f"Starting clone process using config from: {config_path} [{doc_label}]")
-                try:
-                    new_urls = run_clone_jobs(jobs_to_clone, flags, variables, args.dry_run)
-                except ValueError as e:
-                    print(e)
-                    sys.exit(1)
-            else:
-                print(f"Starting ISO post process using config from: {config_path} [{doc_label}]")
-                try:
-                    new_urls = run_iso_post(config, flags, args.dry_run)
-                except ValueError as e:
-                    print(e)
-                    sys.exit(1)
+            try:
+                if jobs_to_clone:
+                    print(f"Starting clone process using config from: {config_path} [{doc_label}]")
+                    new_urls, failures = run_clone_jobs(jobs_to_clone, flags, variables, args.dry_run)
+                else:
+                    print(f"Starting ISO post process using config from: {config_path} [{doc_label}]")
+                    new_urls, failures = run_iso_post(config, flags, args.dry_run)
+            except RunnerError as e:
+                print(e)
+                sys.exit(e.exit_code)
+            except ValueError as e:
+                print(e)
+                sys.exit(1)
 
+            total_failures += failures
             if new_urls:
                 current_file_urls.extend(new_urls)
 
         if not args.dry_run and current_file_urls:
-            output_file = args.output if (args.output and len(args.config_files) == 1) else _make_output_path(config_path, timestamp)
+            output_file = args.output if (args.output and len(args.config_files) == 1) else config_path.with_name(f"{config_path.stem}.{timestamp}.urls.txt")
             print("\n" + "="*40)
             with output_file.open("w", encoding="utf-8") as f:
                 for url in current_file_urls:
                     f.write(url + "\n")
             print(f"Success! {len(current_file_urls)} URLs saved to '{output_file}'")
-            print(f"You can now run: openqa-mon -i {output_file}")
             print("="*40)
+            if args.watch:
+                check_required_tool("openqa-mon")
+                os.execlp("openqa-mon", "openqa-mon", "-i", str(output_file))
+            else:
+                print(f"You can now run: openqa-mon -i {output_file}")
+
+    if total_failures:
+        print(f"\nCompleted with {total_failures} failed command(s).")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
