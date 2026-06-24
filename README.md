@@ -16,7 +16,7 @@ A Python utility to automate the cloning of OpenQA jobs in bulk or posting new I
 ## Prerequisites
 
 1. **Python 3**: Ensure you have Python 3 installed.
-2. **OpenQA Client Tools**: The script relies on `openqa-clone-job` and `openqa-cli`. Ensure they are installed and available in your system `PATH`. Most likely you'll want to install the `openQA-client` package. 
+2. **OpenQA Client Tools**: The script relies on `openqa-clone-job` and `openqa-cli`. Ensure they are installed and available in your system `PATH`. Most likely you'll want to install the `openQA-client` package. `openqa-mon` is also required if you use `--watch`.
 3. **Python Dependencies**:
    ```bash
    pip install PyYAML
@@ -29,18 +29,22 @@ A Python utility to automate the cloning of OpenQA jobs in bulk or posting new I
 
 ## Usage
 
-Make the script executable (optional) and run it with a configuration file:
+Make the script executable (optional) and run it with one or more configuration files:
 
 ```bash
 chmod +x clone_runner.py
-./clone_runner.py -c my_config.yaml
+./clone_runner.py my_config.yaml
+./clone_runner.py config_a.yaml config_b.yaml   # multiple files, each runs independently
 ```
 
 ### Arguments
 
-*   `-c`, `--config` (Required): Path to the YAML configuration file.
-*   `-o`, `--output` (Optional): Custom path for the output file containing new job URLs. If omitted, it defaults to `<config_filename>.urls.txt`.
-*   `--dry-run`: Print the commands that would be executed without actually running them.
+*   `config_files` (Required): One or more paths to YAML configuration files (positional, repeatable).
+*   `-o`, `--output` (Optional): Custom output path for the new-job-URL file. Ignored when more than one config file is given. If omitted, output is named `<config_stem>.<timestamp>.urls.txt` next to the config file.
+*   `--dry-run`: Print the commands that would be executed without running them.
+*   `--validate`: Print a summary of what each config would do, then exit without running anything.
+*   `--watch`: After writing the URL file, launch `openqa-mon -i <file>` automatically.
+*   `-h`, `--help`: Show the built-in help page and exit.
 
 ## Configuration File Format
 
@@ -64,7 +68,9 @@ variables:
 
 2) post isos
 
-when the `jobs_to_clone` entry is missing, the script switches to `openqa-cli api -X post isos` mode. In this mode some variables are mandatory:
+when the `jobs_to_clone` entry is missing, the script switches to `openqa-cli api -X post isos` mode. In this mode some variables are mandatory.
+
+The optional `host:` field selects the target openQA server (scheme defaults to `https://` if omitted). It is mutually exclusive with the `--osd` and `--o3` shorthand flags, which target `openqa.suse.de` and `openqa.opensuse.org` respectively.
 
 ```yaml
 host: 'openqa.opensuse.org'
@@ -98,10 +104,18 @@ variables:
 
 ## Output
 
-Upon success, the script generates a text file containing the URLs of the newly created jobs. You can feed this directly into monitoring tools:
+Upon success, the script generates a text file named `<config_stem>.<timestamp>.urls.txt` containing the URLs of the newly created jobs. You can feed this into monitoring tools, or use `--watch` to launch the monitor automatically:
 
 ```bash
-openqa-mon -i my_config.urls.txt
+openqa-mon -i my_config.20240624-1430.urls.txt
+# or just:
+./clone_runner.py my_config.yaml --watch
+```
+
+## Running Tests
+
+```bash
+python3 -m unittest test_clone_runner.py
 ```
 
 ## Contributing
@@ -113,8 +127,4 @@ Contributions are welcome! Please follow these steps:
 3. Commit your changes. 
 4. Push to the branch and open a Pull Request. 
 
-Please ensure that you run the tests before submitting: 
-
-```bash
-python3 -m unittest test_clone_runner.py
-```
+Please run the tests before submitting (see [Running Tests](#running-tests)).
