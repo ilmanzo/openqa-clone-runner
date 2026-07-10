@@ -262,24 +262,11 @@ def validate_config(config_path: Path, configs: list[dict[str, Any]]) -> None:
             print(f"  Commands      : {combos}")
         print()
 
-def print_help_page() -> None:
+def main() -> None:
     required_vars_table = "\n".join(
         f"      {var:<14} {desc}" for var, desc in ISO_REQUIRED_VARS.items()
     )
-    print(f"""OpenQA Clone Automator
-
-Usage:
-    clone_runner.py <config.yaml>... [options]
-
-Description:
-    Automates cloning of OpenQA jobs or posting of ISOs based on a YAML configuration.
-
-Options:
-    -o, --output    Custom output file path (optional, single config only).
-    --dry-run       Print commands without executing.
-    --validate      Show a summary of what each config would do, then exit.
-
---- Configuration Examples ---
+    epilog_text = f"""--- Configuration Examples ---
 
 [1] Clone Jobs Mode
     Use this to clone existing jobs with modified variables.
@@ -313,21 +300,23 @@ Options:
 
     flags:
       - --osd   # target openqa.suse.de (or --o3 for openqa.opensuse.org)
-""")
+"""
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="OpenQA Clone Automator", add_help=False)
-    parser.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
+    parser = argparse.ArgumentParser(
+        description="Automates cloning of OpenQA jobs or posting of ISOs based on a YAML configuration.",
+        epilog=epilog_text,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("config_files", type=Path, nargs='*', help="Path to YAML config file(s)")
-    parser.add_argument("-o", "--output", type=Path, help="Custom output file path (optional)")
+    parser.add_argument("-o", "--output", type=Path, help="Custom output file path (optional, single config only)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     parser.add_argument("--validate", action="store_true", help="Show config summary without executing")
     parser.add_argument("--watch", action="store_true", help="Launch openqa-mon on the output file when done")
     args = parser.parse_args()
 
-    if args.help or not args.config_files:
-        print_help_page()
-        sys.exit(0 if args.help else 1)
+    if not args.config_files:
+        parser.print_help()
+        sys.exit(1)
 
     if args.output and len(args.config_files) > 1:
         print("Warning: --output is ignored when multiple config files are given. "
